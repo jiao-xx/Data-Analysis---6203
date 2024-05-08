@@ -1,0 +1,978 @@
+---
+title: "Hotel Cancellations Investigation"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+---
+```{r}
+# Install all our libraries
+library(readr)
+library(ggplot2)
+library(corrplot)
+library(reshape2)
+library(dplyr)
+library(pscl)
+library(caret)
+library(pROC)
+library(tibble)
+library(lubridate)
+library(forecast)
+library(zoo)
+library(ROCR)
+library(car)
+getwd()
+data = read.csv("hotel_bookings.csv", header = TRUE)
+```
+# Numeric vs Catagorical
+```{r}
+numerical_vars <- names(data)[sapply(data, is.numeric)]
+categorical_vars <- names(data)[sapply(data, function(x) is.character(x) || is.factor(x))]
+
+print("Numerical Variables:")
+print(numerical_vars)
+```
+
+```{r}
+print("Categorical Variables:")
+print(categorical_vars)
+```
+
+```{r}
+names(data)
+```
+The following section contains our exploratory data analysis. The goal of this part of the code is to help us better understand the data and make early predictions about which parts of the data may indicate a potential relationship with cancellation rates. By performing this exploration, we hope to achieve a deeper understanding of our dataset to help us determine our next steps creating a robust analysis to create strong models to share with hotel owners to help improve business profits.
+```{r}
+head(data)
+```
+
+```{r}
+dim(data)
+```
+
+```{r}
+summary(data)
+```
+# Data Cleaning
+```{r}
+# Calculate the number of missing values for each column
+missing_data <- sapply(data, function(x) sum(is.na(x)))
+
+# Calculate the percentage of missing values for each column
+missing_data_percentage <- missing_data / nrow(data) * 100
+
+# Create a data frame with the number of missing values and their percentage
+missing_data_df <- data.frame('Missing_Values' = missing_data, 'Percentage' = missing_data_percentage)
+
+# Filter to include only those with missing values
+missing_data_df <- missing_data_df[missing_data_df$Missing_Values > 0, ]
+
+# Sort by percentage of missing values in descending order
+missing_data_df <- missing_data_df[order(-missing_data_df$Percentage), ]
+
+missing_data_df
+
+# Drop company & agent; I think we don't need that
+data_cleaned <- data[, !(names(data) %in% c("company", "agent"))]
+
+# Replacing 'Children' with mean
+data_cleaned$children[is.na(data_cleaned$children)] <- mean(data_cleaned$children, na.rm = TRUE)
+
+# Replacing missing values in 'Country' with its mode
+mode_country <- function(x) {
+  uniqx <- unique(na.omit(x))
+  uniqx[which.max(tabulate(match(x, uniqx)))]
+}
+
+country_mode <- mode_country(data_cleaned$country)
+data_cleaned$country[is.na(data_cleaned$country)] <- country_mode
+
+sum(is.na(data_cleaned))
+```
+
+EDA for lead time
+```{r}
+ggplot(data_cleaned, aes(x = lead_time)) +
+  geom_histogram(bins = 50, fill = "skyblue", color = "black") +
+  labs(title = "Histogram of Lead Time",
+       x = "Lead Time (days)",
+       y = "Frequency") +
+  theme_minimal()
+```
+EDA for Average Daily Rate
+```{r}
+ggplot(data_cleaned, aes(x = adr)) +
+  geom_histogram(bins = 50, fill = "green", color = "black") +
+  labs(title = "Histogram of Average Daily Rate (ADR)",
+       x = "Average Daily Rate",
+       y = "Frequency") +
+  theme_minimal()
+```
+EAD for Special Requests
+```{r}
+# Calculating the maximum number of special requests
+max_requests <- max(data_cleaned$total_of_special_requests, na.rm = TRUE)
+
+ggplot(data, aes(x = total_of_special_requests)) +
+  geom_histogram(breaks=seq(-0.5, max_requests + 0.5, by=1), fill = "orange", color = "black") +
+  labs(title = "Histogram of Total Number of Special Requests",
+       x = "Number of Special Requests",
+       y = "Frequency") +
+  scale_x_continuous(breaks = 0:max_requests) +
+  theme_minimal()
+```
+Historgram of babies. Values higher than 3 are most likely outliers. No babies is clearly the most common reservation type. Makes sense as people usually do not like to travel with infants.
+```{r}
+ggplot(data_cleaned, aes(x = babies)) +
+  geom_bar(fill = "lightpink", color = "black") +
+  labs(title = "Distribution of Number of Babies", x = "Number of Babies", y = "Frequency") +
+  theme_minimal()
+```
+Historgram of deposit_type
+```{r}
+ggplot(data_cleaned, aes(x = deposit_type)) +
+  geom_bar(fill = "darkgreen", color = "black") +
+  labs(title = "Distribution of Deposit Type", x = "Deposit Type", y = "Frequency") +
+  theme_minimal()
+```
+Historgram of distribution_channel
+```{r}
+ggplot(data_cleaned, aes(x = distribution_channel)) +
+  geom_bar(fill = "yellow", color = "black") +
+  labs(title = "Distribution of Distribution Channel", x = "Deposit Type", y = "Frequency") +
+  theme_minimal()
+```
+Historgram of market_segment
+```{r}
+ggplot(data_cleaned, aes(x = market_segment)) +
+  geom_bar(fill = "darkblue", color = "black") +
+  labs(title = "Distribution of Market Segment", x = "Deposit Type", y = "Frequency") +
+  theme_minimal()
+```
+Historgram of is_repeated_guest
+```{r}
+ggplot(data_cleaned, aes(x = is_repeated_guest)) +
+  geom_bar(fill = "purple", color = "black") +
+  labs(title = "Distribution of Repeated Guest", x = "Deposit Type", y = "Frequency") +
+  theme_minimal()
+```
+Historgram of previous_cancellations
+```{r}
+ggplot(data_cleaned, aes(x = previous_cancellations)) +
+  geom_bar(fill = "navajowhite2", color = "black") +
+  labs(title = "Distribution of Previous Cancellations", x = "Deposit Type", y = "Frequency") +
+  theme_minimal()
+```
+Histogram of arrival_date_week_number. This data is approaching a normal distribution.
+```{r}
+ggplot(data_cleaned, aes(x = arrival_date_week_number)) +
+  geom_bar(fill = "olivedrab3", color = "black") +
+  labs(title = "Distribution of Arrival Week Number", x = "Week Number", y = "Frequency") +
+  theme_minimal()
+```
+Histogram of arrival_date_day_of_month. This data looks to be almost uniform in its distribution.
+```{r}
+ggplot(data_cleaned, aes(x = arrival_date_day_of_month)) +
+  geom_bar(fill = "cadetblue", color = "black") +
+  labs(title = "Distribution of Day of the Month", x = "Day of the Month", y = "Frequency") +
+  theme_minimal()
+```
+Histogram of arrival_date_year. Data is skewed slightly towards 2017 (left tail)
+```{r}
+ggplot(data_cleaned, aes(x = arrival_date_year)) +
+  geom_bar(fill = "mistyrose2", color = "black") +
+  labs(title = "Distribution of Arrival Years", x = "Year", y = "Frequency") +
+  theme_minimal()
+```
+Histogram of stays_in_weekend_nights. This data has a significant right tail, though this does make sense because people generally do not stay in a hotel for more than a week or two at a time.
+```{r}
+ggplot(data_cleaned, aes(x = stays_in_weekend_nights)) +
+  geom_bar(fill = "firebrick4", color = "black") +
+  labs(title = "Distribution of Number of Weekend Nights per Stay", x = "Weekend Nights per Stay", y = "Frequency") +
+  theme_minimal()
+```
+Histogram of stays_in_week_nights. This data has a significant right tail, though this does make sense because people generally do not stay in a hotel for more than a week or two at a time.
+```{r}
+ggplot(data_cleaned, aes(x = stays_in_week_nights)) +
+  geom_bar(fill = "mediumorchid3", color = "black") +
+  labs(title = "Distribution of Number of Week Nights per Stay", x = "Week Nights per Stay", y = "Frequency") +
+  theme_minimal()
+```
+Histogram of adults.  This data may have several outliers with a higher number of adults, but at the minimum it has a significant right tail. 2 adults also looks to be by far the most common number of adults per hotel room reservation. 
+```{r}
+ggplot(data_cleaned, aes(x = adults)) +
+  geom_bar(fill = "palevioletred", color = "black") +
+  labs(title = "Distribution of Number of Adults", x = "Number of Adults", y = "Frequency") +
+  theme_minimal()
+```
+Histogram of children. This data also has a significant right tail and the majority of all data points have 0 children. 10 children may also be an outlier since it is far from the next closest number of children, which is 3. 
+```{r}
+ggplot(data_cleaned, aes(x = children)) +
+  geom_bar(fill = "thistle", color = "black") +
+  labs(title = "Distribution of Number of Children", x = "Number of Children", y = "Frequency") +
+  theme_minimal()
+```
+
+
+
+Correlation Analysis and Map
+```{r}
+# Remove non-numeric columns
+hotel_data_numeric <- data_cleaned[sapply(data_cleaned, is.numeric)]
+
+# Replace NA values with the mean of the column
+hotel_data_numeric <- lapply(hotel_data_numeric, function(x) if(is.numeric(x)) { replace(x, is.na(x), mean(x, na.rm = TRUE)) } else { x })
+
+hotel_data_numeric <- as.data.frame(hotel_data_numeric)
+
+correlation_matrix <- cor(hotel_data_numeric, use = "complete.obs")
+
+correlation_matrix
+
+# Melt the correlation matrix into a long data format suitable for ggplot
+melted_correlation_matrix <- melt(correlation_matrix)
+
+# Generate the heatmap using ggplot
+ggplot(data = melted_correlation_matrix, aes(Var1, Var2, fill = value)) +
+  geom_tile() + # Use geom_tile for heatmap squares
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, limit = c(-1,1), space = "Lab", name="Pearson\nCorrelation") +
+  theme_minimal() + # Use a minimal theme
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), # Rotate x-axis labels for better readability
+        axis.title.x = element_blank(), # Remove axis title for a cleaner look
+        axis.title.y = element_blank()) + 
+  labs(fill = "Correlation") # Label for the legend
+
+```
+arrival_date_year, arrival_date_week_number, arrival_date_day_of_month, stays_in_weekend_nights, stays_in_week_nights, adults, and children fields are all extremely weakly correlated with is_canceled, indicating there is little to no linear relationship between these predictors and the response (is_canceled). The correlation coefficients of these predictors with the reponse are between .01666 (arrival_date_year) to -0.00179 (stays_in_weekend_nights). Lead time has a weak positive linear relationship with is_canceled with a correlation coefficient of 0.29312.
+      
+Box plot of lead_time and is_canceled
+
+```{r}
+ ggplot(data = data_cleaned, aes(x=factor(is_canceled), y = lead_time, fill=factor(is_canceled))) + 
+  geom_boxplot() +
+  ggtitle("BoxPlot for lead_time vs. is_canceled") + theme(plot.title = element_text(size = 15, face = "bold")) +
+  labs(x="is_canceled", y="lead_time") + 
+  theme(axis.text.x = element_text(size=15), axis.text.y = element_text(size=15), 
+  axis.title=element_text(size=15,face="bold"))
+```
+Correlation between lead_time and is_canceled can also be seen in this box plot. Reservations with a higher lead time on average are more likely to cancel their reservation.
+
+
+Box plot of adults and is_canceled. Correlation is positive between number of adults and cancellation probability.
+
+```{r}
+ ggplot(data = data_cleaned, aes(x=factor(is_canceled), y = lead_time, fill=factor(is_canceled))) + 
+  geom_boxplot() +
+  ggtitle("BoxPlot for adults vs. is_canceled") + theme(plot.title = element_text(size = 15, face = "bold")) +
+  labs(x="is_canceled", y="adults") + 
+  theme(axis.text.x = element_text(size=15), axis.text.y = element_text(size=15), 
+  axis.title=element_text(size=15,face="bold"))
+```
+
+Box plot of children and is_canceled. Correlation is positive between number of children and cancellation probability.
+
+```{r}
+ ggplot(data = data_cleaned, aes(x=factor(is_canceled), y = lead_time, fill=factor(is_canceled))) + 
+  geom_boxplot() +
+  ggtitle("BoxPlot for children vs. is_canceled") + theme(plot.title = element_text(size = 15, face = "bold")) +
+  labs(x="is_canceled", y="children") + 
+  theme(axis.text.x = element_text(size=15), axis.text.y = element_text(size=15), 
+  axis.title=element_text(size=15,face="bold"))
+```
+
+Box plot of babies and is_canceled. Correlation is positive between number of babies and cancellation probability.
+
+```{r}
+ ggplot(data = data_cleaned, aes(x=factor(is_canceled), y = lead_time, fill=factor(is_canceled))) + 
+  geom_boxplot() +
+  ggtitle("BoxPlot for babies vs. is_canceled") + theme(plot.title = element_text(size = 15, face = "bold")) +
+  labs(x="is_canceled", y="babies") + 
+  theme(axis.text.x = element_text(size=15), axis.text.y = element_text(size=15), 
+  axis.title=element_text(size=15,face="bold"))
+```
+
+# Analyzing Categorical Data
+```{r}
+table(data$hotel, data$is_canceled)
+barplot(table(data$customer_type, data$is_canceled), beside=T, legend=T)
+
+```
+
+Curious if deposit type has any relation to cancellation. Lets perform a Chi Squared test.
+
+```{r}
+# Create a contingency table
+table_deposit_canceled <- table(data_cleaned$deposit_type, data_cleaned$is_canceled)
+
+# Perform a Chi-squared test
+chi_squared_test <- chisq.test(table_deposit_canceled)
+
+# Print the results of the Chi-squared test
+print(chi_squared_test)
+
+# Plot the counts of cancellations for each deposit type
+
+ggplot(data_cleaned, aes(x = deposit_type, fill = as.factor(is_canceled))) +
+  geom_bar(position = "fill") +
+  labs(title = "Cancellation Rate by Deposit Type",
+       x = "Deposit Type",
+       y = "Proportion of Reservations") +
+  scale_fill_discrete(name = "Is Canceled", labels = c("No", "Yes")) +
+  theme_minimal()
+```
+
+Data does not show as expected. Non-refundable has the highest rate of cancellation. Why? This is something to further explore.
+
+Do any of the above have correlations to cancellation chance?
+
+For distribution channel and market segment we can use Chi Squared again as they are categorical
+
+```{r}
+# For the categorical variables 'market_segment' and 'is_canceled'
+# Chi-squared test
+table_market_segment <- table(data$market_segment, data$is_canceled)
+chi_squared_test_market_segment <- chisq.test(table_market_segment)
+print(chi_squared_test_market_segment)
+
+# For the categorical variable 'distribution_channel' and 'is_canceled'
+# Chi-squared test
+table_distribution_channel <- table(data$distribution_channel, data$is_canceled)
+chi_squared_test_distribution_channel <- chisq.test(table_distribution_channel)
+print(chi_squared_test_distribution_channel)
+```
+
+Repeat guests is a binary variable so we will also perform a Chi Squared test here. It looks like repeat guests are possibly less likely to cancel. Perhaps a smart business decision would be to icentivize people to come back to the hotel by offering specials for repeated guests, such as later check out times for no extra charge or a free night if they book at a certain frequency.
+
+```{r}
+table_repeated_guest <- table(data$is_repeated_guest, data$is_canceled)
+chi_squared_test_repeated_guest <- chisq.test(table_repeated_guest)
+print(chi_squared_test_repeated_guest)
+```
+
+Previous cancellations is a numerical variable so we can use a point biserial correlation. 
+
+```{r}
+# Point biserial correlation
+correlation_previous_cancellations <- cor.test(data$previous_cancellations, as.numeric(data$is_canceled), method = "pearson")
+print(correlation_previous_cancellations)
+```
+
+We can plot all of these figures too
+
+```{r}
+# Bar plot for 'is_repeated_guest' vs 'is_canceled'
+ggplot(data, aes(x = as.factor(is_repeated_guest), fill = as.factor(is_canceled))) +
+  geom_bar(position = "fill") +
+  labs(x = "Is Repeated Guest", y = "Proportion of Cancellation") +
+  scale_fill_discrete(name = "Is Canceled", labels = c("No", "Yes"))
+
+# Bar plot for 'market_segment' vs 'is_canceled'
+ggplot(data, aes(x = market_segment, fill = as.factor(is_canceled))) +
+  geom_bar(position = "fill") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Market Segment", y = "Proportion of Cancellation")
+
+# Bar plot for 'distribution_channel' vs 'is_canceled'
+ggplot(data, aes(x = distribution_channel, fill = as.factor(is_canceled))) +
+  geom_bar(position = "fill") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Distribution Channel", y = "Proportion of Cancellation")
+```
+
+##Model creations and explorations
+
+```{r}
+model_deposit_type <- function(data_cleaned) {
+  # Ensure 'deposit_type' and 'is_canceled' are factors
+  data_cleaned$deposit_type <- as.factor(data_cleaned$deposit_type)
+  data_cleaned$is_canceled <- as.factor(data_cleaned$is_canceled)
+  
+  # Fit the logistic regression model
+  model_deposit <- glm(is_canceled ~ deposit_type, data = data_cleaned, family = binomial)
+  
+  return(model_deposit)
+
+}
+model_deposit <- model_deposit_type(data_cleaned)
+summary(model_deposit)
+```
+
+```{r}
+model_repeated_guest <- function(data_cleaned) {
+  # Ensure 'is_repeated_guest' and 'is_canceled' are factors
+  data_cleaned$is_repeated_guest <- as.factor(data_cleaned$is_repeated_guest)
+  data_cleaned$is_canceled <- as.factor(data_cleaned$is_canceled)
+  
+  # Fit the logistic regression model
+  model_repeated <- glm(is_canceled ~ is_repeated_guest, data = data_cleaned, family = binomial)
+  
+  return(model_repeated)
+
+}
+model_repeated <- model_repeated_guest(data_cleaned)
+summary(model_repeated)
+```
+
+```{r}
+model_previous_cancellations <- function(data_cleaned) {
+  # Ensure 'is_canceled' is a factor
+  data_cleaned$is_canceled <- as.factor(data_cleaned$is_canceled)
+  data_cleaned$is_canceled <- as.factor(data_cleaned$is_canceled)
+  # Fit the logistic regression model
+  model_previous_cancel <- glm(is_canceled ~ previous_cancellations, data = data_cleaned, family = binomial)
+  
+  return(model_previous_cancel)
+
+}
+model_previous_cancel <- model_previous_cancellations(data_cleaned)
+summary(model_previous_cancel)
+```
+
+```{r}
+model_market_segment <- function(data_cleaned) {
+  # Ensure 'market_segment' and 'is_canceled' are factors
+  data_cleaned$market_segment <- as.factor(data_cleaned$market_segment)
+  data_cleaned$is_canceled <- as.factor(data_cleaned$is_canceled)
+  
+  # Fit the logistic regression model
+  model_market <- glm(is_canceled ~ market_segment, data = data_cleaned, family = binomial)
+  return(model_market)
+
+}
+model_market <- model_market_segment(data_cleaned)
+summary(model_market)
+```
+
+Let's get psuedo adjusted R^2 values for these
+
+```{r}
+pR2(model_deposit)
+pR2(model_repeated)
+pR2(model_previous_cancel)
+pR2(model_market)
+```
+
+These all do an extremely poor job at explaining the data. We would like to see a McFadden R-squared between 0.2 and 0.4 but these are all far below 0.1. 
+
+Lets try another metric to see if any of these factors can explain the data. We will try confusion matrix, accuracy, precision and recall, F1 score, ROC Curve and AUC, and Log-Loss for each model
+
+Deposit Type
+```{r}
+# Deposit Type
+
+# First, make predictions on the dataset
+predictions_deposit_type <- predict(model_deposit, data_cleaned, type = "response")
+predicted_class_deposit_type <- ifelse(predictions_deposit_type > 0.5, 1, 0)
+actual_class_deposit_type <- data_cleaned$is_canceled
+
+# Confusion matrix
+conf_matrix_deposit_type <- confusionMatrix(factor(predicted_class_deposit_type), factor(actual_class_deposit_type))
+
+# Accuracy
+accuracy_deposit_type <- conf_matrix_deposit_type$overall['Accuracy']
+
+# Precision, Recall, and F1 Score
+precision_deposit_type <- posPredValue(factor(predicted_class_deposit_type), factor(actual_class_deposit_type))
+recall_deposit_type <- sensitivity(factor(predicted_class_deposit_type), factor(actual_class_deposit_type))
+F1_deposit_type <- (2 * precision_deposit_type * recall_deposit_type) / (precision_deposit_type + recall_deposit_type)
+
+# ROC Curve and AUC
+roc_obj_deposit_type <- roc(factor(actual_class_deposit_type), predictions_deposit_type)
+auc_deposit_type <- auc(roc_obj_deposit_type)
+plot(roc_obj_deposit_type, main="ROC Curve")
+
+# Log-Loss
+log_loss_deposit_type <- -mean(actual_class_deposit_type * log(predictions_deposit_type) + (1 - actual_class_deposit_type) * log(1 - predictions_deposit_type))
+
+# Output the metrics
+list(accuracy = accuracy_deposit_type, precision = precision_deposit_type, recall = recall_deposit_type, F1 = F1_deposit_type, AUC = auc_deposit_type, log_loss = log_loss_deposit_type)
+```
+
+Repeated Guest
+```{r}
+# Repeated Guest
+
+# First, make predictions on the dataset
+data_cleaned$is_repeated_guest <- factor(data_cleaned$is_repeated_guest)
+predictions_repeated_guest <- predict(model_repeated, data_cleaned, type = "response")
+predicted_class_repeated_guest <- ifelse(predictions_repeated_guest > 0.5, 1, 0)
+actual_class_repeated_guest <- data_cleaned$is_canceled
+
+# Confusion matrix
+conf_matrix_repeated_guest <- confusionMatrix(factor(predicted_class_repeated_guest), factor(actual_class_repeated_guest))
+
+# Accuracy
+accuracy_repeated_guest <- conf_matrix_repeated_guest$overall['Accuracy']
+
+# Precision, Recall, and F1 Score
+precision_repeated_guest <- posPredValue(factor(predicted_class_repeated_guest), factor(actual_class_repeated_guest))
+recall_repeated_guest <- sensitivity(factor(predicted_class_repeated_guest), factor(actual_class_repeated_guest))
+F1_repeated_guest <- (2 * precision_repeated_guest * recall_repeated_guest) / (precision_repeated_guest + recall_repeated_guest)
+
+# ROC Curve and AUC
+roc_obj_repeated_guest <- roc(factor(actual_class_repeated_guest), predictions_repeated_guest)
+auc_repeated_guest <- auc(roc_obj_repeated_guest)
+plot(roc_obj_repeated_guest, main="ROC Curve")
+
+# Log-Loss
+log_loss_repeated_guest <- -mean(actual_class_repeated_guest * log(predictions_repeated_guest) + (1 - actual_class_repeated_guest) * log(1 - predictions_repeated_guest))
+
+# Output the metrics
+list(accuracy = accuracy_repeated_guest, precision = precision_repeated_guest, recall = recall_repeated_guest, F1 = F1_repeated_guest, AUC = auc_repeated_guest, log_loss = log_loss_repeated_guest)
+```
+
+Previous cancellations
+```{r}
+# First, make predictions on the dataset
+predictions_previous_cancel <- predict(model_market, data_cleaned, type = "response")
+predicted_class_previous_cancel <- ifelse(predictions_previous_cancel > 0.5, 1, 0)
+actual_class_previous_cancel <- data_cleaned$is_canceled
+
+# Confusion matrix
+conf_matrix_previous_cancel <- confusionMatrix(factor(predicted_class_previous_cancel), factor(actual_class_previous_cancel))
+
+# Accuracy
+accuracy_previous_cancel <- conf_matrix_previous_cancel$overall['Accuracy']
+
+# Precision, Recall, and F1 Score
+precision_previous_cancel <- posPredValue(factor(predicted_class_previous_cancel), factor(actual_class_previous_cancel))
+recall_previous_cancel <- sensitivity(factor(predicted_class_previous_cancel), factor(actual_class_previous_cancel))
+F1_previous_cancel <- (2 * precision_previous_cancel * recall_previous_cancel) / (precision_previous_cancel + recall_previous_cancel)
+
+# ROC Curve and AUC
+roc_obj_previous_cancel <- roc(factor(actual_class_previous_cancel), predictions_previous_cancel)
+auc_previous_cancel <- auc(roc_obj_previous_cancel)
+plot(roc_obj_previous_cancel, main="ROC Curve")
+
+# Log-Loss
+log_loss_previous_cancel <- -mean(actual_class_previous_cancel * log(predictions_previous_cancel) + (1 - actual_class_previous_cancel) * log(1 - predictions_previous_cancel))
+
+# Output the metrics
+list(accuracy = accuracy_previous_cancel, precision = precision_previous_cancel, recall = recall_previous_cancel, F1 = F1_previous_cancel, AUC = auc_previous_cancel, log_loss = log_loss_previous_cancel)
+```
+
+Market segments
+```{r}
+# First, make predictions on the dataset
+predictions_market_segment <- predict(model_repeated, data_cleaned, type = "response")
+predicted_class_market_segment <- ifelse(predictions_market_segment > 0.5, 1, 0)
+actual_class_market_segment <- data_cleaned$is_canceled
+
+# Confusion matrix
+conf_matrix_market_segment <- confusionMatrix(factor(predicted_class_market_segment), factor(actual_class_market_segment))
+
+# Accuracy
+accuracy_market_segment <- conf_matrix_market_segment$overall['Accuracy']
+
+# Precision, Recall, and F1 Score
+precision_market_segment <- posPredValue(factor(predicted_class_market_segment), factor(actual_class_market_segment))
+recall_market_segment <- sensitivity(factor(predicted_class_market_segment), factor(actual_class_market_segment))
+F1_market_segment <- (2 * precision_market_segment * recall_market_segment) / (precision_market_segment + recall_market_segment)
+
+# ROC Curve and AUC
+roc_obj_market_segment <- roc(factor(actual_class_market_segment), predictions_market_segment)
+auc_market_segment <- auc(roc_obj_market_segment)
+plot(roc_obj_market_segment, main="ROC Curve")
+
+# Log-Loss
+log_loss_market_segment <- -mean(actual_class_market_segment * log(predictions_market_segment) + (1 - actual_class_market_segment) * log(1 - predictions_market_segment))
+
+# Output the metrics
+list(accuracy = accuracy_market_segment, precision = precision_market_segment, recall = recall_market_segment, F1 = F1_market_segment, AUC = auc_market_segment, log_loss = log_loss_market_segment)
+```
+
+
+# Lets discuss results
+
+# Deposit Type:
+
+-Accuracy: Around 0.75, which means the model correctly predicts whether a booking is canceled 75% of the time.
+
+-Precision: Approximately 0.71, suggesting that when the model predicts a cancellation, it's correct about 71% of the time.
+
+-Recall: Very high at 0.99, indicating the model is very good at identifying the positive cases (cancellations).
+
+-F1 Score: At 0.83, the F1 score balances precision and recall, suggesting a good balance for this particular model, especially given the high recall.
+
+-AUC: The AUC is about 0.66, which is better than random chance (0.5) but not exceptionally high. An AUC closer to 1.0 would indicate a very good model. This value suggests moderate discrimination ability of the model.
+
+-Log Loss: The log loss is about 0.53, which gives a measure of uncertainty of the predictions; lower values are better, with 0 representing a perfect log loss
+
+-Overall: Deposit Type model performs reasonably well, especially regarding recall. There is definitely room for improvement in ability to discriminate between cancelled or not cancelled bookings. 
+
+# Repeated Guest
+
+-ROC Curve: The ROC curve indicates a model with limited ability to discriminate between the positive and negative class, with an AUC of 0.5154, which is only slightly better than a random guess. This suggests the model does not perform well in distinguishing between repeated guests and new guests in terms of their likelihood to cancel.
+
+-Accuracy: An accuracy of about 0.63 suggests that the model correctly predicts cancellations approximately 63% of the time. However, considering the AUC and the context of the data, this might be mostly reflective of the underlying distribution of the classes rather than the model's predictive power.
+
+-Precision and Recall: The precision appears as NA, which indicates there might have been an issue with the calculation. This often happens if there are no instances of the predicted class; for example, if the model did not predict any positive cases. Recall is 1, suggesting that the model identifies all actual cancellations, but given the precision is NA, this might be because the model predicts almost everything as the positive class.
+
+-F1 Score: Similarly, it's NA, which is likely due to the precision being NA. The F1 score cannot be calculated if either precision or recall is undefined.
+
+-Log Loss: A log loss of approximately 0.655 suggests a moderate level of uncertainty in the predictions. Lower log loss values are better, but in this case, the value suggests the model's predictions are somewhat uncertain.
+
+-Overall: This seems to explain the data extremely poorly and is likely completely unreleated to whether or not someone will cancel. We can see this due to the AUC close to 0.5 and the lack of an F1 Score and Precision metric. 
+
+# Previous cancellations
+
+-ROC Curve: The curve is somewhat above the diagonal line, with an AUC of 0.6361. This is an indication of moderate predictive ability, and the model can discriminate between the classes better than a random guess.
+
+-Accuracy: The model has an accuracy of approximately 66%, which means it correctly predicts the cancellation outcome 66% of the time.
+
+-Precision: The precision is about 67%, which suggests that when the model predicts a cancellation, it's correct two-thirds of the time.
+
+-Recall: The recall (sensitivity) is high, about 90%, indicating the model is quite good at identifying actual cancellations.
+
+-F1 Score: With an F1 score of around 77%, this metric indicates a balance between precision and recall, which is relatively good for a model. An F1 score closer to 100% is ideal, but 77% is a decent score.
+
+-Log Loss: The log loss is 0.62249. This value is in a moderate range, indicating the uncertainty of predictions. Lower values of log loss are better, with 0 representing a perfect model.
+
+-Overall: Better than is_repeated_guest based on the AUC value. The balance between precision and recall does suggest room for improvement on these metrics. The recall is high but the precision is moderate, so the model may be over-predicting cancellations. This is backed up by the F1 score. It is reasonable but certainly can be improved.
+
+# Market Segment
+
+-ROC Curve: The curve shows an AUC of 0.5154, which suggests that the model's ability to distinguish between those who will cancel and those who will not is barely better than flipping a coin.
+
+-Accuracy: The model has an accuracy of about 62.95%, meaning it predicts the correct outcome around 62.95% of the time.
+
+-Precision: This value is NA (not available), indicating a possible division by zero in the calculation. This typically happens when there are no true positive predictions, meaning the model may not have predicted any positive cases correctly, or there were no positive predictions at all.
+
+-Recall: The recall is 1, which means the model identifies all actual cancellations. However, combined with a precision of NA, this suggests the model may be predicting most cases as cancellations.
+
+-F1 Score: The F1 score is NA, likely due to the precision being NA. You cannot calculate an F1 score without a defined precision value.
+
+-Log Loss: The log loss is around 0.655, which is relatively high. The lower the log loss, the better the model, with 0 representing a perfect log loss. This value indicates that there's quite a bit of uncertainty in the model's predictions.
+
+-Overall: Market segment does not perform well. It does a poor job at explaining the data. The NA for precision and F1 score implies that the model may be biased and exclusively predicting one class. This could be due to an imbalanced dataset however.
+
+# Takeaway
+
+Deposit Type seems to be the best metric out of the 4 for determining whether or not a booking may lead to a cancellation. Previous cancellations performs decently well and should be considered, but not as heavily as deposit type. Market segment and repeated guest can essentially be ignored, as they seem to have absolutely no bearing on whether or not a booking will cancel.
+
+```{r}
+library(caret)
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Split the data into training (70%) and remaining (30%)
+training_indices <- createDataPartition(data_cleaned$country, p = 0.7, list = FALSE)
+training_data <- data_cleaned[training_indices, ]
+remaining_data <- data_cleaned[-training_indices, ]
+
+# Split the remaining data into validation and test sets (50% each of remaining 30%)
+validation_indices <- createDataPartition(remaining_data$country, p = 0.5, list = FALSE)
+validation_data <- remaining_data[validation_indices, ]
+test_data <- remaining_data[-validation_indices, ]
+```
+
+Fitting 3 models that encompass more variables and performing further analysis such as Cook's Distance, VIF, Residual Analysis, performance measures
+
+Model A's coefficients are both significant since their p-values are less than the significance level of .01.
+```{r}
+modela = glm(is_canceled ~ lead_time + stays_in_week_nights, training_data, family = binomial)
+summary(modela)
+```
+The significant coefficients in Model B are stays_in_week_nights, lead_time, deposit_typeNon Refund, is_repeated_guest, previous_cancellations, market_segmentComplementary, market_segmentCorporate, market_segmentDirect, market_segmentGroups, and market_segmentOffline TA/TO as their p-values are less than the significance level of .01.
+```{r}
+modelb = glm(is_canceled ~ stays_in_week_nights + lead_time + deposit_type + is_repeated_guest + previous_cancellations + market_segment, training_data, family = binomial)
+summary(modelb)
+```
+For Model C, all coefficients are statistically significant except deposit_typeRefundable whose p-value is greater than the significance level of .01.
+```{r}
+modelc = glm(is_canceled ~ stays_in_week_nights + lead_time + deposit_type + previous_cancellations, training_data, family = binomial)
+summary(modelc)
+```
+
+Cook's distance for all models. There are no outliers in any model.
+```{r}
+cooks_residualsa = cooks.distance(modela, type="deviance")
+outliersa = which(cooks_residualsa > 1)
+length(outliersa)
+
+cooks_residualsb = cooks.distance(modelb, type="deviance")
+outliersb = which(cooks_residualsb > 1)
+length(outliersb)
+
+cooks_residualsc = cooks.distance(modelc, type="deviance")
+outliersc = which(cooks_residualsc > 1)
+length(outliersc)
+```
+VIFs for all predictors in all models are below 10, so there is no evidence of multicollinearity.
+```{r}
+#use VIF function to calculate VIF for each predictor variable
+vifsa = vif(modela)
+vifsb = vif(modelb)
+vifsc = vif(modelc)
+vifsa
+vifsb
+vifsc
+```
+
+Evaluating GOF for Model A. It's not a good fit because QQ plot has significant tails at both ends and histogram is not normally distributed. 
+```{r}
+resa = resid(modela, type="deviance")
+par(mfrow=c(2,2))
+
+qqnorm(resa, ylab="Std residuals")
+qqline(resa, col="red", lwd=2)
+hist(resa, 10, xlab="Std residuals", main="")
+```
+
+Model B's GOF appears better than Model A because the QQ plot has less severe tails at the ends and the histogram is much closer to a Normal distribution.
+```{r}
+resb = resid(modelb, type="deviance")
+par(mfrow=c(2,2))
+
+qqnorm(resb, ylab="Std residuals")
+qqline(resb, col="blue", lwd=2)
+hist(resb, 10, xlab="Std residuals", main="")
+```
+Evaluating GOF for Model C. It's not a good fit because QQ plot has tails at both ends. Histogram is looks slightly less normally distributed than Model B. 
+```{r}
+resc = resid(modelc, type="deviance")
+par(mfrow=c(2,2))
+
+qqnorm(resc, ylab="Std residuals")
+qqline(resc, col="green", lwd=2)
+hist(resc, 10, xlab="Std residuals", main="")
+```
+
+The accuracy, precision, and F-1 score for Model B and Model C are all higher than Model A. Model C, however, does not perform as well as Model B as only the Precision value is higher for Model C than Model B.
+```{r}
+proba = predict(modela, test_data, type="response")
+probb = predict(modelb, test_data, type="response")
+probc = predict(modelc, test_data, type="response")
+
+preda = ifelse(proba >= .5, 1, 0)
+predb = ifelse(probb >= .5, 1, 0)
+predc = ifelse(probc >= .5, 1, 0)
+
+preda_factor = factor(preda, levels = c(1, 0))
+predb_factor = factor(predb, levels = c(1, 0))
+predc_factor = factor(predc, levels = c(1, 0))
+obs_factor = factor(test_data$is_canceled, levels = c(1, 0))
+
+cma = confusionMatrix(preda_factor, obs_factor, positive = '1')
+cmb = confusionMatrix(predb_factor, obs_factor, positive = '1')
+cmc = confusionMatrix(predc_factor, obs_factor, positive = '1')
+
+accuracya = cma$overall['Accuracy']
+accuracyb = cmb$overall['Accuracy']
+accuracyc = cmc$overall['Accuracy']
+
+cma_table = cma$table
+cmb_table = cmb$table
+cmc_table = cmc$table
+
+TPa = cma_table[2, 2] 
+FPa = cma_table[1, 2]  
+FNa = cma_table[2, 1]  
+TNa = cma_table[1, 1] 
+TPb = cmb_table[2, 2] 
+FPb = cmb_table[1, 2]  
+FNb = cmb_table[2, 1]  
+TNb = cmb_table[1, 1] 
+TPc = cmc_table[2, 2] 
+FPc = cmc_table[1, 2]  
+FNc = cmc_table[2, 1]  
+TNc = cmc_table[1, 1] 
+
+precisiona = TPa / (TPa + FPa)
+precisionb = TPb / (TPb + FPb)
+precisionc = TPc / (TPc + FPc)
+
+sensitivitya =  TPa / (TPa + FNa)
+sensitivityb =  TPb / (TPb + FNb)
+sensitivityc =  TPc / (TPc + FNc)
+
+f1_scorea = 2 * (precisiona * sensitivitya) / (precisiona + sensitivitya)
+f1_scoreb = 2 * (precisionb * sensitivityb) / (precisionb + sensitivityb)
+f1_scorec = 2 * (precisionc * sensitivityc) / (precisionc + sensitivityc)
+
+print(paste("Model A Accuracy:", accuracya))
+print(paste("Model A Precision:", precisiona))
+print(paste("Model A F-1 Score:", f1_scorea))
+
+print(paste("Model B Accuracy:", accuracyb))
+print(paste("Model B Precision:", precisionb))
+print(paste("Model B F-1 Score:", f1_scoreb))
+
+print(paste("Model C Accuracy:", accuracyc))
+print(paste("Model C Precision:", precisionc))
+print(paste("Model C F-1 Score:", f1_scorec))
+
+```
+Making nice looking confusion matrices.
+```{r}
+cma_df = as.data.frame(cma_table)
+cmb_df = as.data.frame(cmb_table)
+cmc_df = as.data.frame(cmc_table)
+
+ggplot(data = cma_df, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq)) +
+  scale_fill_gradient(low = "yellow", high = "red") +
+  labs(x = "Actual", y = "Predicted", title = "Model A Confusion Matrix") +
+  theme_minimal()
+
+ggplot(data = cmb_df, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq)) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  labs(x = "Actual", y = "Predicted", title = "Model B Confusion Matrix") +
+  theme_minimal()
+
+ggplot(data = cmc_df, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq)) +
+  scale_fill_gradient(low = "lightgreen", high = "darkgreen") +
+  labs(x = "Actual", y = "Predicted", title = "Model C Confusion Matrix") +
+  theme_minimal()
+```
+
+Looking at ROC curves, Model B and Model C have a higher AUC than Model A, but Model B has the highest.
+```{r}
+predictiona = prediction(proba, obs_factor)
+predictionb = prediction(probb, obs_factor)
+predictionc = prediction(probc, obs_factor)
+
+perfa = performance(predictiona, "tpr", "fpr")
+perfb = performance(predictionb, "tpr", "fpr")
+perfc = performance(predictionc, "tpr", "fpr")
+
+plot(perfa, main = "Model A ROC Curve", col = "red", lwd = 2)
+plot(perfb, main = "Model B ROC Curve", col = "blue", lwd = 2)
+plot(perfc, main = "Model C ROC Curve", col = "green", lwd = 2)
+
+auca = performance(predictiona, "auc")
+aucb = performance(predictionb, "auc")
+aucc = performance(predictionc, "auc")
+
+auca_value = as.numeric(auca@y.values)
+aucb_value = as.numeric(aucb@y.values)
+aucc_value = as.numeric(aucc@y.values)
+
+print(paste("Model A AUC:", auca_value))
+print(paste("Model B AUC:", aucb_value))
+print(paste("Model C AUC:", aucc_value))
+
+```
+
+Getting pseudo R^2 for all models. Model B and Model C are in the optimal range for the McFadden R^2 (between .2 and .4), but Model A is not within the optimal range.
+```{r}
+pR2(modela)
+pR2(modelb)
+pR2(modelc)
+```
+The log loss of Model B is the lowest of all 3 models, indicating it is the best. Model C has a slightly higher log loss and Model A has the highest log loss.
+
+```{r}
+obs_data = test_data$is_canceled
+
+log_loss_modela = -mean(obs_data * log(proba) + (1 - obs_data) * log(1 - proba))
+log_loss_modelb = -mean(obs_data * log(probb) + (1 - obs_data) * log(1 - probb))
+log_loss_modelc = -mean(obs_data * log(probc) + (1 - obs_data) * log(1 - probc))
+
+log_loss_modela
+log_loss_modelb
+log_loss_modelc
+```
+The next 3 sections are the same code used by Jeff for his evaluation of the random forest model in case this is also needed for the Logistic Regression models.
+```{r}
+# Evaluate Model A on validation data
+validation_predictions_a <- predict(modela, validation_data)
+validation_RMSE_a <- sqrt(mean((validation_predictions_a - validation_data$is_canceled)^2))
+validation_R2_a <- cor(validation_predictions_a, validation_data$is_canceled)^2
+cat("Validation RMSE Model A:", validation_RMSE_a, "\n")
+cat("Validation R-squared Model A:", validation_R2_a, "\n")
+
+# Test Model A on test data
+test_predictions_a <- predict(modela, test_data)
+test_RMSE_a <- sqrt(mean((test_predictions_a - test_data$is_canceled)^2))
+test_R2_a <- cor(test_predictions_a, test_data$is_canceled)^2
+cat("Test RMSE Model A:", test_RMSE_a, "\n")
+cat("Test R-squared Model A:", test_R2_a, "\n")
+```
+
+```{r}
+# Evaluate Model B on validation data
+validation_predictions_b <- predict(modelb, validation_data)
+validation_RMSE_b <- sqrt(mean((validation_predictions_b - validation_data$is_canceled)^2))
+validation_R2_b <- cor(validation_predictions_b, validation_data$is_canceled)^2
+cat("Validation RMSE Model B:", validation_RMSE_b, "\n")
+cat("Validation R-squared Model B:", validation_R2_b, "\n")
+
+# Test Model B on test data
+test_predictions_b <- predict(modelb, test_data)
+test_RMSE_b <- sqrt(mean((test_predictions_b - test_data$is_canceled)^2))
+test_R2_b <- cor(test_predictions_b, test_data$is_canceled)^2
+cat("Test RMSE Model B:", test_RMSE_b, "\n")
+cat("Test R-squared Model B:", test_R2_b, "\n")
+```
+```{r}
+# Evaluate Model C on validation data
+validation_predictions_c <- predict(modelc, validation_data)
+validation_RMSE_c <- sqrt(mean((validation_predictions_c - validation_data$is_canceled)^2))
+validation_R2_c <- cor(validation_predictions_c, validation_data$is_canceled)^2
+cat("Validation RMSE Model C:", validation_RMSE_c, "\n")
+cat("Validation R-squared Model C:", validation_R2_c, "\n")
+
+# Test Model C on test data
+test_predictions_c <- predict(modelc, test_data)
+test_RMSE_c <- sqrt(mean((test_predictions_c - test_data$is_canceled)^2))
+test_R2_c <- cor(test_predictions_c, test_data$is_canceled)^2
+cat("Test RMSE Model C:", test_RMSE_c, "\n")
+cat("Test R-squared Model C:", test_R2_c, "\n")
+```
+Therefore, we conclude that Model B performs better than Model A and Model C.
+
+
+# Time Series Analysis
+Holts Winter
+
+This graph shows us that the rate at which people cancel tends to flucuate seasonly.
+```{r}
+
+# Prepare the data by creating a proper date format
+data_cleaned <- data_cleaned %>%
+  mutate(
+    date = make_date(year = arrival_date_year, month = match(arrival_date_month, month.name), day = 1)
+  ) %>%
+  group_by(date) %>%
+  summarise(
+    cancellation_rate = mean(is_canceled, na.rm = TRUE)
+  )
+
+# Convert to a time series object
+ts_data <- ts(data_cleaned$cancellation_rate, start = c(year(min(data_cleaned$date)), month(min(data_cleaned$date))), frequency = 12)
+
+# Decompose the time series
+decomposed <- stl(ts_data, s.window = "periodic")
+
+# Plot the decomposed object
+plot(decomposed)
+
+# Forecast future cancellations
+forecasted <- forecast(decomposed, h = 12)
+plot(forecasted)
+```
+
+Seasonal and Trend Decomposition using Loess (STL)
+
+Top Panel: Original time series data. Cancellation rate from 2015 to 2017. 
+
+Second Panel: Shows us the seasonal component. This pattern appears to repeat yearly and suggests that cancellation rate is related to the time of year with higher cancellation rates in the summer. This makes sense considering the hotels probably have more bookings in the summer.
+
+Third Panel: Trend. Shows a slight upward trend suggesting that cancellation rates were increasing year by year. This could be insignificant given the small range of years.
+
+Fourth Panel: Remainder. What is left after seasonal and trend components have been removed. Represents the random fluctuations that aren't attributed to seasonality or trend. It should resemble white noise, which it does.
+
+Holts Winter:
+
+The black line is the observed data points. The blue line is the forecasted cancellations based on our model. The grey areas are our confidence intervals. This graph shows us a seasonal trend as well with cancellations being higher in the middle of the year (summer) and lower in the beginning/end of the year (winter). 
