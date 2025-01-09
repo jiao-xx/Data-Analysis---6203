@@ -1,4 +1,4 @@
-# Investigation-on-the-Probability-of-Hotel-Cancellations
+# Predicting-Hotel-Cancellations
 
 Group Project for the Spring 2024 semester at Georgia Institute of Technology
 
